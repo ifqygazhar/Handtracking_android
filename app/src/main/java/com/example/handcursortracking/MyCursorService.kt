@@ -110,8 +110,17 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
     }
 
     private fun toggleCameraPip(show: Boolean) {
+        if (isCameraPipVisible == show) return
         isCameraPipVisible = show
-        cameraContainer?.visibility = if (show) View.VISIBLE else View.GONE
+        
+        val params = cameraContainer?.layoutParams as? WindowManager.LayoutParams ?: return
+        if (show) {
+            params.alpha = 1f
+        } else {
+            // Keep on screen but make transparent to ensure CameraX active
+            params.alpha = 0.01f 
+        }
+        windowManager.updateViewLayout(cameraContainer, params)
     }
 
     private fun handleGesture(gesture: GestureType, x: Float, y: Float) {
@@ -228,8 +237,11 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
         windowManager.addView(cameraContainer, params)
 
-        // Apply initial visibility from preferences
-        cameraContainer?.visibility = if (isCameraPipVisible) View.VISIBLE else View.GONE
+        // Apply initial visibility
+        if (!isCameraPipVisible) {
+            params.alpha = 0.01f
+            windowManager.updateViewLayout(cameraContainer, params)
+        }
     }
 
     private fun setupCursorWindow() {
