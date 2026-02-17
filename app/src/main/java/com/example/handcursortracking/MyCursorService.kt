@@ -32,6 +32,10 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
     private var overlayView: HandOverlayView? = null
     private var handTracker: HandTracker? = null
 
+    // Swipe tracking
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+
     override fun onCreate() {
         super.onCreate()
         lifecycleRegistry = LifecycleRegistry(this)
@@ -49,7 +53,7 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
         val previewView = cameraContainer?.getChildAt(0) as? PreviewView
 
-        handTracker = HandTracker(this, this) { x, y, isClicking, result ->
+        handTracker = HandTracker(this, this) { x, y, gesture, result ->
             if (x >= 0 && y >= 0) {
                 updateCursorPosition(x, y)
             }
@@ -60,7 +64,29 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
                 overlayView?.setLandmarks(null)
             }
 
-            if (isClicking && x >= 0 && y >= 0) performClick(x, y)
+            when (gesture) {
+                GestureType.CLICK -> {
+                    if (x >= 0 && y >= 0) performClick(x, y)
+                }
+                GestureType.BACK -> {
+                    performBackAction()
+                }
+                GestureType.SWIPE_START -> {
+                    swipeStartX = x
+                    swipeStartY = y
+                    cursorView?.setColorFilter(Color.YELLOW)
+                }
+                GestureType.SWIPING -> {
+                    // Visual feedback: cursor tetap kuning selama swipe
+                }
+                GestureType.SWIPE_END -> {
+                    if (x >= 0 && y >= 0) {
+                        performSwipe(swipeStartX, swipeStartY, x, y)
+                    }
+                    cursorView?.setColorFilter(Color.CYAN)
+                }
+                GestureType.NONE -> { }
+            }
         }
 
         handTracker?.start(previewView?.surfaceProvider)
@@ -135,9 +161,35 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         val path = Path()
         path.moveTo(x, y)
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
             .build()
-        dispatchGesture(gesture, null, null)
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {}
+            override fun onCancelled(gestureDescription: GestureDescription?) {}
+        }, null)
+    }
+
+    private fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float) {
+        cursorView?.setColorFilter(Color.GREEN)
+        cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 300)
+
+        val path = Path()
+        path.moveTo(startX, startY)
+        path.lineTo(endX, endY)
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .build()
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {}
+            override fun onCancelled(gestureDescription: GestureDescription?) {}
+        }, null)
+    }
+
+    private fun performBackAction() {
+        cursorView?.setColorFilter(Color.MAGENTA)
+        cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 300)
+        performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
     override fun onDestroy() {
@@ -155,7 +207,6 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
     class HandOverlayView(context: Context) : View(context) {
         private var landmarks: List<NormalizedLandmark>? = null
 
-        // Rasio kamera portrait setelah rotasi: 3:4
         private val cameraAspectRatio = 3f / 4f
 
         private val pointPaint = Paint().apply {
@@ -183,19 +234,12 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
             isAntiAlias = true
         }
 
-        // Hand connections (MediaPipe hand landmark topology)
         private val connections = listOf(
-            // Thumb
             0 to 1, 1 to 2, 2 to 3, 3 to 4,
-            // Index
             0 to 5, 5 to 6, 6 to 7, 7 to 8,
-            // Middle
             0 to 9, 9 to 10, 10 to 11, 11 to 12,
-            // Ring
             0 to 13, 13 to 14, 14 to 15, 15 to 16,
-            // Pinky
             0 to 17, 17 to 18, 18 to 19, 19 to 20,
-            // Palm
             5 to 9, 9 to 13, 13 to 17
         )
 
@@ -211,7 +255,6 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
             val viewHeight = height.toFloat()
             val viewRatio = viewWidth / viewHeight
 
-            // Hitung area gambar yang sebenarnya (FIT_CENTER)
             var imageWidth = viewWidth
             var imageHeight = viewHeight
 
@@ -227,10 +270,8 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
             landmarks?.let { marks ->
                 if (marks.size < 21) return@let
 
-
                 fun mapX(normX: Float): Float = offsetX + (1f - normX) * imageWidth
                 fun mapY(normY: Float): Float = offsetY + normY * imageHeight
-
 
                 for ((start, end) in connections) {
                     val s = marks[start]
@@ -242,7 +283,6 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
                     )
                 }
 
-
                 for ((i, landmark) in marks.withIndex()) {
                     val px = mapX(landmark.x())
                     val py = mapY(landmark.y())
@@ -250,9 +290,10 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
                     val paint = when (i) {
                         8 -> indexPaint
                         4 -> thumbPaint
+                        12 -> indexPaint  // Jari tengah juga highlight
                         else -> pointPaint
                     }
-                    canvas.drawCircle(px, py, if (i == 8) 10f else if (i == 4) 8f else 5f, paint)
+                    canvas.drawCircle(px, py, if (i == 8 || i == 12) 10f else if (i == 4) 8f else 5f, paint)
                 }
             }
         }

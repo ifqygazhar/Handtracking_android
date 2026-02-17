@@ -25,13 +25,24 @@ import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.hypot
 
+enum class GestureType {
+    NONE,
+    CLICK,        // Jari tengah + jempol
+    BACK,         // Jari manis + jempol
+    SWIPE_START,  // Telunjuk + jempol mulai pinch
+    SWIPING,      // Telunjuk + jempol masih ditahan & bergerak
+    SWIPE_END     // Telunjuk + jempol dilepas
+}
 
 class HandTracker(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
-    private val onHandUpdate: (x: Float, y: Float, isClicking: Boolean, result: HandLandmarkerResult?) -> Unit
+    private val onHandUpdate: (
+        x: Float, y: Float,
+        gesture: GestureType,
+        result: HandLandmarkerResult?
+    ) -> Unit
 ) {
-    // --- ONE EURO FILTER SETTINGS --
     private val MIN_CUTOFF = 0.3f
     private val BETA = 15.0f
     private val DERIVATIVE_CUTOFF = 1.0f
@@ -43,17 +54,22 @@ class HandTracker(
     private val screenWidth by lazy { context.resources.displayMetrics.widthPixels.toFloat() }
     private val screenHeight by lazy { context.resources.displayMetrics.heightPixels.toFloat() }
 
-    // One Euro Filters for X and Y
     private val filterX = OneEuroFilter(minCutoff = MIN_CUTOFF, beta = BETA, dCutoff = DERIVATIVE_CUTOFF)
     private val filterY = OneEuroFilter(minCutoff = MIN_CUTOFF, beta = BETA, dCutoff = DERIVATIVE_CUTOFF)
 
-    private var isClickingPrev = false
+    // Click state: jari tengah + jempol
+    private var isClickPrev = false
 
+    // Back state: jari manis + jempol
+    private var isBackPrev = false
 
+    // Swipe state: telunjuk + jempol
+    private var isSwipePrev = false
+
+    // Click stabilization (for middle finger click)
     private var frozenX = 0f
     private var frozenY = 0f
     private var isFrozen = false
-
 
     private var lastX = -1f
     private var lastY = -1f
@@ -120,16 +136,12 @@ class HandTracker(
         }, ContextCompat.getMainExecutor(context))
     }
 
-
     private fun processImageProxy(imageProxy: ImageProxy) {
         val rawBitmap = imageProxy.toBitmap()
         val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
-
         val matrix = Matrix().apply {
-
             postRotate(rotationDegrees.toFloat())
-
         }
 
         val rotatedBitmap = Bitmap.createBitmap(
@@ -145,72 +157,97 @@ class HandTracker(
             e.printStackTrace()
         }
 
-
-        if (rotatedBitmap != rawBitmap) {
-            // Don't recycle rawBitmap as it may be managed by imageProxy
-        }
-
         imageProxy.close()
     }
 
     private fun handleHandLandmarks(result: HandLandmarkerResult) {
         if (result.landmarks().isEmpty()) {
-
             CoroutineScope(Dispatchers.Main).launch {
-                onHandUpdate(lastX, lastY, false, null)
+                // Kalau sedang swipe lalu tangan hilang, kirim SWIPE_END
+                val gesture = if (isSwipePrev) GestureType.SWIPE_END else GestureType.NONE
+                isSwipePrev = false
+                onHandUpdate(lastX, lastY, gesture, null)
             }
             return
         }
 
         val landmarks = result.landmarks()[0]
-        val indexTip = landmarks[8]   // Ujung telunjuk - untuk posisi cursor
-        val thumbTip = landmarks[4]   // Ujung jempol - untuk pinch click
-        val indexMcp = landmarks[5]   // Pangkal telunjuk - untuk stabilitas
+        val indexTip = landmarks[8]    // Telunjuk - cursor & swipe
+        val thumbTip = landmarks[4]    // Jempol
+        val middleTip = landmarks[12]  // Jari tengah - click
+        val ringTip = landmarks[16]    // Jari manis - back
 
-        val rawX = indexTip.x()
-        val rawY = indexTip.y()
-
-
-        val mirroredX = 1f - rawX  // Mirror untuk front camera
-        val mappedY = rawY         // Y sudah benar setelah rotasi
-
-
+        // Cursor position dari telunjuk
+        val mirroredX = 1f - indexTip.x()
+        val mappedY = indexTip.y()
         val targetPixelX = mirroredX * screenWidth
         val targetPixelY = mappedY * screenHeight
-
 
         val timestamp = System.nanoTime() / 1_000_000_000.0
         val smoothX = filterX.filter(targetPixelX, timestamp)
         val smoothY = filterY.filter(targetPixelY, timestamp)
 
-        // --- CLICK DETECTION (Pinch: jempol + telunjuk) ---
-        val pinchDist = hypot(
+        // --- Deteksi pinch jarak ---
+        val swipeDist = hypot(
             (indexTip.x() - thumbTip.x()).toDouble(),
             (indexTip.y() - thumbTip.y()).toDouble()
         ).toFloat()
-        val isPinching = pinchDist < 0.05f
-        val finalIsClicking = isPinching && !isClickingPrev
 
+        val clickDist = hypot(
+            (middleTip.x() - thumbTip.x()).toDouble(),
+            (middleTip.y() - thumbTip.y()).toDouble()
+        ).toFloat()
 
-        if (isPinching && !isFrozen) {
+        val backDist = hypot(
+            (ringTip.x() - thumbTip.x()).toDouble(),
+            (ringTip.y() - thumbTip.y()).toDouble()
+        ).toFloat()
+
+        val isSwipePinch = swipeDist < 0.06f
+        val isClickPinch = clickDist < 0.06f && !isSwipePinch
+        val isBackPinch = backDist < 0.06f && !isSwipePinch && !isClickPinch
+
+        // --- Tentukan gesture ---
+        var gesture = GestureType.NONE
+
+        // SWIPE: Telunjuk + Jempol pinch & drag
+        if (isSwipePinch) {
+            gesture = if (!isSwipePrev) GestureType.SWIPE_START else GestureType.SWIPING
+        } else if (isSwipePrev) {
+            gesture = GestureType.SWIPE_END
+        }
+
+        // CLICK: Jari Tengah + Jempol (hanya trigger sekali saat mulai pinch)
+        if (isClickPinch && !isClickPrev && gesture == GestureType.NONE) {
+            gesture = GestureType.CLICK
+        }
+
+        // BACK: Jari Manis + Jempol (hanya trigger sekali)
+        if (isBackPinch && !isBackPrev && gesture == GestureType.NONE) {
+            gesture = GestureType.BACK
+        }
+
+        // Click stabilization: freeze cursor saat click
+        if (isClickPinch && !isFrozen) {
             isFrozen = true
             frozenX = smoothX
             frozenY = smoothY
-        } else if (!isPinching) {
+        } else if (!isClickPinch) {
             isFrozen = false
         }
 
+        // Saat swipe, cursor TIDAK di-freeze agar bisa track gerakan
         val finalX = if (isFrozen) frozenX else smoothX
         val finalY = if (isFrozen) frozenY else smoothY
 
-
         lastX = finalX
         lastY = finalY
-
-        isClickingPrev = isPinching
+        isSwipePrev = isSwipePinch
+        isClickPrev = isClickPinch
+        isBackPrev = isBackPinch
 
         CoroutineScope(Dispatchers.Main).launch {
-            onHandUpdate(finalX, finalY, finalIsClicking, result)
+            onHandUpdate(finalX, finalY, gesture, result)
         }
     }
 
@@ -221,7 +258,6 @@ class HandTracker(
         handLandmarker?.close()
     }
 
-    // --- ONE EURO FILTER ---
     class OneEuroFilter(
         private val minCutoff: Float = 1.0f,
         private val beta: Float = 0.0f,
