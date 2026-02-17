@@ -173,12 +173,21 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         cursorView?.setColorFilter(Color.GREEN)
         cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 300)
 
+        // Amplifikasi jarak swipe agar gerak tangan kecil = swipe besar
+        val amplify = 2.5f
+        val centerX = (startX + endX) / 2f
+        val centerY = (startY + endY) / 2f
+        val ampStartX = (centerX + (startX - centerX) * amplify).coerceIn(0f, resources.displayMetrics.widthPixels.toFloat())
+        val ampStartY = (centerY + (startY - centerY) * amplify).coerceIn(0f, resources.displayMetrics.heightPixels.toFloat())
+        val ampEndX = (centerX + (endX - centerX) * amplify).coerceIn(0f, resources.displayMetrics.widthPixels.toFloat())
+        val ampEndY = (centerY + (endY - centerY) * amplify).coerceIn(0f, resources.displayMetrics.heightPixels.toFloat())
+
         val path = Path()
-        path.moveTo(startX, startY)
-        path.lineTo(endX, endY)
+        path.moveTo(ampStartX, ampStartY)
+        path.lineTo(ampEndX, ampEndY)
 
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
             .build()
         dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {}

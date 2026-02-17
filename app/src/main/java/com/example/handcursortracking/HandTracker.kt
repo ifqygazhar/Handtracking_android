@@ -47,6 +47,14 @@ class HandTracker(
     private val BETA = 15.0f
     private val DERIVATIVE_CUTOFF = 1.0f
 
+    // Sensitivity: memperbesar jangkauan tracking dari center
+    // Gerakan kecil di tangan = gerakan besar di layar
+    private val SENSITIVITY_X = 2.0f
+    private val SENSITIVITY_Y = 2.5f  // Lebih tinggi karena layar HP panjang vertikal
+
+    // Swipe amplification: memperbesar jarak swipe
+    private val SWIPE_AMPLIFY = 2.5f
+
     private var handLandmarker: HandLandmarker? = null
     private lateinit var cameraExecutor: ExecutorService
     private var surfaceProvider: Preview.SurfaceProvider? = null
@@ -180,8 +188,14 @@ class HandTracker(
         // Cursor position dari telunjuk
         val mirroredX = 1f - indexTip.x()
         val mappedY = indexTip.y()
-        val targetPixelX = mirroredX * screenWidth
-        val targetPixelY = mappedY * screenHeight
+
+        // Sensitivity scaling dari center (0.5)
+        // Gerakan kecil dari tengah kamera → jangkau seluruh layar
+        val scaledX = ((mirroredX - 0.5f) * SENSITIVITY_X + 0.5f).coerceIn(0f, 1f)
+        val scaledY = ((mappedY - 0.5f) * SENSITIVITY_Y + 0.5f).coerceIn(0f, 1f)
+
+        val targetPixelX = scaledX * screenWidth
+        val targetPixelY = scaledY * screenHeight
 
         val timestamp = System.nanoTime() / 1_000_000_000.0
         val smoothX = filterX.filter(targetPixelX, timestamp)
