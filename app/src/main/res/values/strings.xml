@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HandCursorTracking</string>
+    <string name="accessibility_service_description">Hand tracking cursor service that allows you to control your device with hand gestures</string>
+</resources>
