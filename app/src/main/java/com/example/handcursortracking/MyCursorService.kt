@@ -8,12 +8,16 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.TextView
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -26,15 +30,27 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
     private lateinit var windowManager: WindowManager
     private lateinit var lifecycleRegistry: LifecycleRegistry
+    private val handler = Handler(Looper.getMainLooper())
 
-    private var cursorView: ImageView? = null
+    private var cursorView: View? = null
+    private var cursorDot: View? = null
+    private var cursorRing: View? = null
     private var cameraContainer: FrameLayout? = null
     private var overlayView: HandOverlayView? = null
+    private var gestureLabel: TextView? = null
     private var handTracker: HandTracker? = null
 
     // Swipe tracking
     private var swipeStartX = 0f
     private var swipeStartY = 0f
+
+    // Long press gesture tracking
+    private var longPressGesture: GestureDescription? = null
+
+    // Gesture label auto-hide
+    private val hideLabelRunnable = Runnable {
+        gestureLabel?.visibility = View.GONE
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -50,6 +66,7 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
         setupCameraDebugWindow()
         setupCursorWindow()
+        setupGestureLabel()
 
         val previewView = cameraContainer?.getChildAt(0) as? PreviewView
 
@@ -64,34 +81,94 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
                 overlayView?.setLandmarks(null)
             }
 
-            when (gesture) {
-                GestureType.CLICK -> {
-                    if (x >= 0 && y >= 0) performClick(x, y)
-                }
-                GestureType.BACK -> {
-                    performBackAction()
-                }
-                GestureType.SWIPE_START -> {
-                    swipeStartX = x
-                    swipeStartY = y
-                    cursorView?.setColorFilter(Color.YELLOW)
-                }
-                GestureType.SWIPING -> {
-                    // Visual feedback: cursor tetap kuning selama swipe
-                }
-                GestureType.SWIPE_END -> {
-                    if (x >= 0 && y >= 0) {
-                        performSwipe(swipeStartX, swipeStartY, x, y)
-                    }
-                    cursorView?.setColorFilter(Color.CYAN)
-                }
-                GestureType.NONE -> { }
-            }
+            handleGesture(gesture, x, y)
         }
 
         handTracker?.start(previewView?.surfaceProvider)
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
     }
+
+    private fun handleGesture(gesture: GestureType, x: Float, y: Float) {
+        when (gesture) {
+            GestureType.CLICK -> {
+                if (x >= 0 && y >= 0) {
+                    performClick(x, y)
+                    showGestureLabel("TAP", Color.RED)
+                    setCursorColor(Color.RED)
+                    resetCursorColorDelayed(200)
+                }
+            }
+
+            GestureType.LONG_PRESS_START -> {
+                if (x >= 0 && y >= 0) {
+                    performLongPress(x, y)
+                    showGestureLabel("LONG PRESS", 0xFFFF6600.toInt())
+                    setCursorColor(0xFFFF6600.toInt())
+                }
+            }
+
+            GestureType.LONG_PRESS_END -> {
+                setCursorColor(Color.CYAN)
+            }
+
+            GestureType.BACK -> {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                showGestureLabel("← BACK", Color.MAGENTA)
+                setCursorColor(Color.MAGENTA)
+                resetCursorColorDelayed(300)
+            }
+
+            GestureType.HOME -> {
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                showGestureLabel("⌂ HOME", Color.GREEN)
+                setCursorColor(Color.GREEN)
+                resetCursorColorDelayed(300)
+            }
+
+            GestureType.RECENT_APPS -> {
+                performGlobalAction(GLOBAL_ACTION_RECENTS)
+                showGestureLabel("☐ RECENTS", 0xFF00BFFF.toInt())
+                setCursorColor(0xFF00BFFF.toInt())
+                resetCursorColorDelayed(400)
+            }
+
+            GestureType.NOTIFICATIONS -> {
+                performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+                showGestureLabel("🔔 NOTIFICATIONS", 0xFFFFD700.toInt())
+                setCursorColor(0xFFFFD700.toInt())
+                resetCursorColorDelayed(400)
+            }
+
+            GestureType.SWIPE_START -> {
+                swipeStartX = x
+                swipeStartY = y
+                showGestureLabel("SWIPE...", Color.YELLOW)
+                setCursorColor(Color.YELLOW)
+            }
+
+            GestureType.SWIPING -> {
+                // Cursor tetap kuning selama swipe
+            }
+
+            GestureType.SWIPE_END -> {
+                if (x >= 0 && y >= 0) {
+                    performSwipe(swipeStartX, swipeStartY, x, y)
+                    showGestureLabel("SWIPE ✓", Color.GREEN)
+                }
+                setCursorColor(Color.CYAN)
+            }
+
+            GestureType.HAND_LOST -> {
+                setCursorAlpha(80)
+            }
+
+            GestureType.NONE -> {
+                setCursorAlpha(255)
+            }
+        }
+    }
+
+    // ==================== UI SETUP ====================
 
     private fun setupCameraDebugWindow() {
         cameraContainer = FrameLayout(this).apply {
@@ -127,14 +204,36 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
     }
 
     private fun setupCursorWindow() {
-        cursorView = ImageView(this).apply {
-            setImageResource(android.R.drawable.ic_input_get)
-            setColorFilter(Color.CYAN)
-            rotation = -45f
+        // Container for cursor components
+        val container = FrameLayout(this)
+
+        // Outer ring (glow effect)
+        cursorRing = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setStroke(3, Color.CYAN)
+                setColor(Color.TRANSPARENT)
+            }
         }
+        container.addView(cursorRing, FrameLayout.LayoutParams(40, 40).apply {
+            gravity = Gravity.CENTER
+        })
+
+        // Inner dot (precise click point)
+        cursorDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.CYAN)
+            }
+        }
+        container.addView(cursorDot, FrameLayout.LayoutParams(14, 14).apply {
+            gravity = Gravity.CENTER
+        })
+
+        cursorView = container
 
         val params = WindowManager.LayoutParams(
-            60, 60,
+            48, 48,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -145,19 +244,72 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         windowManager.addView(cursorView, params)
     }
 
+    private fun setupGestureLabel() {
+        gestureLabel = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setPadding(24, 12, 24, 12)
+            background = GradientDrawable().apply {
+                cornerRadius = 24f
+                setColor(0xCC000000.toInt())
+            }
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        params.y = 100
+
+        windowManager.addView(gestureLabel, params)
+    }
+
+    // ==================== CURSOR HELPERS ====================
+
+    private fun setCursorColor(color: Int) {
+        (cursorDot?.background as? GradientDrawable)?.setColor(color)
+        (cursorRing?.background as? GradientDrawable)?.setStroke(3, color)
+    }
+
+    private fun setCursorAlpha(alpha: Int) {
+        cursorView?.alpha = alpha / 255f
+    }
+
+    private fun resetCursorColorDelayed(delayMs: Long) {
+        handler.postDelayed({ setCursorColor(Color.CYAN) }, delayMs)
+    }
+
     private fun updateCursorPosition(x: Float, y: Float) {
         cursorView?.let { view ->
             val params = view.layoutParams as WindowManager.LayoutParams
-            params.x = x.toInt()
-            params.y = y.toInt()
-            windowManager.updateViewLayout(view, params)
+            params.x = x.toInt() - 24  // Center the 48px cursor
+            params.y = y.toInt() - 24
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {}
         }
     }
 
-    private fun performClick(x: Float, y: Float) {
-        cursorView?.setColorFilter(Color.RED)
-        cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 200)
+    private fun showGestureLabel(text: String, color: Int) {
+        gestureLabel?.let { label ->
+            label.text = text
+            label.setTextColor(color)
+            label.visibility = View.VISIBLE
 
+            handler.removeCallbacks(hideLabelRunnable)
+            handler.postDelayed(hideLabelRunnable, 1000)
+        }
+    }
+
+    // ==================== GESTURE ACTIONS ====================
+
+    private fun performClick(x: Float, y: Float) {
         val path = Path()
         path.moveTo(x, y)
         val gesture = GestureDescription.Builder()
@@ -169,18 +321,28 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         }, null)
     }
 
-    private fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float) {
-        cursorView?.setColorFilter(Color.GREEN)
-        cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 300)
+    private fun performLongPress(x: Float, y: Float) {
+        val path = Path()
+        path.moveTo(x, y)
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 800))
+            .build()
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {}
+            override fun onCancelled(gestureDescription: GestureDescription?) {}
+        }, null)
+    }
 
-        // Amplifikasi jarak swipe agar gerak tangan kecil = swipe besar
+    private fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float) {
         val amplify = 2.5f
         val centerX = (startX + endX) / 2f
         val centerY = (startY + endY) / 2f
-        val ampStartX = (centerX + (startX - centerX) * amplify).coerceIn(0f, resources.displayMetrics.widthPixels.toFloat())
-        val ampStartY = (centerY + (startY - centerY) * amplify).coerceIn(0f, resources.displayMetrics.heightPixels.toFloat())
-        val ampEndX = (centerX + (endX - centerX) * amplify).coerceIn(0f, resources.displayMetrics.widthPixels.toFloat())
-        val ampEndY = (centerY + (endY - centerY) * amplify).coerceIn(0f, resources.displayMetrics.heightPixels.toFloat())
+        val screenW = resources.displayMetrics.widthPixels.toFloat()
+        val screenH = resources.displayMetrics.heightPixels.toFloat()
+        val ampStartX = (centerX + (startX - centerX) * amplify).coerceIn(0f, screenW)
+        val ampStartY = (centerY + (startY - centerY) * amplify).coerceIn(0f, screenH)
+        val ampEndX = (centerX + (endX - centerX) * amplify).coerceIn(0f, screenW)
+        val ampEndY = (centerY + (endY - centerY) * amplify).coerceIn(0f, screenH)
 
         val path = Path()
         path.moveTo(ampStartX, ampStartY)
@@ -195,23 +357,25 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         }, null)
     }
 
-    private fun performBackAction() {
-        cursorView?.setColorFilter(Color.MAGENTA)
-        cursorView?.postDelayed({ cursorView?.setColorFilter(Color.CYAN) }, 300)
-        performGlobalAction(GLOBAL_ACTION_BACK)
-    }
+    // ==================== LIFECYCLE ====================
 
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         handTracker?.stop()
-        if (cursorView != null) windowManager.removeView(cursorView)
-        if (cameraContainer != null) windowManager.removeView(cameraContainer)
+        handler.removeCallbacksAndMessages(null)
+        try {
+            if (cursorView != null) windowManager.removeView(cursorView)
+            if (cameraContainer != null) windowManager.removeView(cameraContainer)
+            if (gestureLabel != null) windowManager.removeView(gestureLabel)
+        } catch (_: Exception) {}
     }
 
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
     override fun onInterrupt() {}
     override val lifecycle: Lifecycle get() = lifecycleRegistry
+
+    // ==================== HAND OVERLAY ====================
 
     class HandOverlayView(context: Context) : View(context) {
         private var landmarks: List<NormalizedLandmark>? = null
@@ -299,7 +463,7 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
                     val paint = when (i) {
                         8 -> indexPaint
                         4 -> thumbPaint
-                        12 -> indexPaint  // Jari tengah juga highlight
+                        12 -> indexPaint
                         else -> pointPaint
                     }
                     canvas.drawCircle(px, py, if (i == 8 || i == 12) 10f else if (i == 4) 8f else 5f, paint)

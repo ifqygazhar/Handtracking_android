@@ -27,11 +27,17 @@ import kotlin.math.hypot
 
 enum class GestureType {
     NONE,
-    CLICK,        // Jari tengah + jempol
-    BACK,         // Jari manis + jempol
-    SWIPE_START,  // Telunjuk + jempol mulai pinch
-    SWIPING,      // Telunjuk + jempol masih ditahan & bergerak
-    SWIPE_END     // Telunjuk + jempol dilepas
+    CLICK,              // Jari tengah + jempol (singkat)
+    LONG_PRESS_START,   // Jari tengah + jempol (tahan > threshold)
+    LONG_PRESS_END,     // Jari tengah + jempol dilepas setelah long press
+    BACK,               // Jari manis + jempol
+    HOME,               // Kelingking + jempol (singkat)
+    RECENT_APPS,        // Kelingking + jempol (tahan > threshold)
+    NOTIFICATIONS,      // Kelingking + jempol (tahan lebih lama)
+    SWIPE_START,        // Telunjuk + jempol mulai pinch
+    SWIPING,            // Telunjuk + jempol masih ditahan
+    SWIPE_END,          // Telunjuk + jempol dilepas
+    HAND_LOST           // Tangan tidak terdeteksi
 }
 
 class HandTracker(
@@ -47,13 +53,13 @@ class HandTracker(
     private val BETA = 15.0f
     private val DERIVATIVE_CUTOFF = 1.0f
 
-    // Sensitivity: memperbesar jangkauan tracking dari center
-    // Gerakan kecil di tangan = gerakan besar di layar
     private val SENSITIVITY_X = 2.0f
-    private val SENSITIVITY_Y = 2.5f  // Lebih tinggi karena layar HP panjang vertikal
-
-    // Swipe amplification: memperbesar jarak swipe
+    private val SENSITIVITY_Y = 2.5f
     private val SWIPE_AMPLIFY = 2.5f
+
+    // Timing thresholds (ms)
+    private val LONG_PRESS_THRESHOLD = 500L
+    private val RECENT_APPS_THRESHOLD = 500L
 
     private var handLandmarker: HandLandmarker? = null
     private lateinit var cameraExecutor: ExecutorService
@@ -65,22 +71,33 @@ class HandTracker(
     private val filterX = OneEuroFilter(minCutoff = MIN_CUTOFF, beta = BETA, dCutoff = DERIVATIVE_CUTOFF)
     private val filterY = OneEuroFilter(minCutoff = MIN_CUTOFF, beta = BETA, dCutoff = DERIVATIVE_CUTOFF)
 
-    // Click state: jari tengah + jempol
-    private var isClickPrev = false
-
-    // Back state: jari manis + jempol
-    private var isBackPrev = false
-
-    // Swipe state: telunjuk + jempol
+    // Swipe state
     private var isSwipePrev = false
 
-    // Click stabilization (for middle finger click)
+    // Click / Long Press state (jari tengah + jempol)
+    private var isClickPinchPrev = false
+    private var clickPinchStartTime = 0L
+    private var longPressTriggered = false
+
+    // Back state (jari manis + jempol)
+    private var isBackPrev = false
+
+    // Home / Recent Apps state (kelingking + jempol)
+    private var isPinkyPinchPrev = false
+    private var pinkyPinchStartTime = 0L
+    private var recentAppsTriggered = false
+
+    // Click stabilization
     private var frozenX = 0f
     private var frozenY = 0f
     private var isFrozen = false
 
     private var lastX = -1f
     private var lastY = -1f
+
+    // Hand lost tracking
+    private var handLostFrames = 0
+    private val HAND_LOST_THRESHOLD = 5
 
     fun start(previewSurfaceProvider: Preview.SurfaceProvider?) {
         this.surfaceProvider = previewSurfaceProvider
@@ -170,30 +187,59 @@ class HandTracker(
 
     private fun handleHandLandmarks(result: HandLandmarkerResult) {
         if (result.landmarks().isEmpty()) {
+            handLostFrames++
+
             CoroutineScope(Dispatchers.Main).launch {
-                // Kalau sedang swipe lalu tangan hilang, kirim SWIPE_END
-                val gesture = if (isSwipePrev) GestureType.SWIPE_END else GestureType.NONE
-                isSwipePrev = false
+                // Kalau sedang swipe lalu tangan hilang
+                if (isSwipePrev) {
+                    isSwipePrev = false
+                    onHandUpdate(lastX, lastY, GestureType.SWIPE_END, null)
+                    return@launch
+                }
+
+                // Reset pinch states
+                if (isClickPinchPrev && !longPressTriggered) {
+                    // Tangan hilang saat pinch singkat → click
+                    isClickPinchPrev = false
+                    onHandUpdate(lastX, lastY, GestureType.CLICK, null)
+                    return@launch
+                }
+                if (isClickPinchPrev && longPressTriggered) {
+                    isClickPinchPrev = false
+                    longPressTriggered = false
+                    onHandUpdate(lastX, lastY, GestureType.LONG_PRESS_END, null)
+                    return@launch
+                }
+                if (isPinkyPinchPrev && !recentAppsTriggered) {
+                    isPinkyPinchPrev = false
+                    onHandUpdate(lastX, lastY, GestureType.HOME, null)
+                    return@launch
+                }
+                isPinkyPinchPrev = false
+                recentAppsTriggered = false
+                isBackPrev = false
+
+                val gesture = if (handLostFrames >= HAND_LOST_THRESHOLD) GestureType.HAND_LOST else GestureType.NONE
                 onHandUpdate(lastX, lastY, gesture, null)
             }
             return
         }
 
-        val landmarks = result.landmarks()[0]
-        val indexTip = landmarks[8]    // Telunjuk - cursor & swipe
-        val thumbTip = landmarks[4]    // Jempol
-        val middleTip = landmarks[12]  // Jari tengah - click
-        val ringTip = landmarks[16]    // Jari manis - back
+        handLostFrames = 0
+        val now = SystemClock.uptimeMillis()
 
-        // Cursor position dari telunjuk
+        val landmarks = result.landmarks()[0]
+        val indexTip = landmarks[8]     // Telunjuk
+        val thumbTip = landmarks[4]     // Jempol
+        val middleTip = landmarks[12]   // Jari tengah
+        val ringTip = landmarks[16]     // Jari manis
+        val pinkyTip = landmarks[20]    // Kelingking
+
+        // --- Cursor Position ---
         val mirroredX = 1f - indexTip.x()
         val mappedY = indexTip.y()
-
-        // Sensitivity scaling dari center (0.5)
-        // Gerakan kecil dari tengah kamera → jangkau seluruh layar
         val scaledX = ((mirroredX - 0.5f) * SENSITIVITY_X + 0.5f).coerceIn(0f, 1f)
         val scaledY = ((mappedY - 0.5f) * SENSITIVITY_Y + 0.5f).coerceIn(0f, 1f)
-
         val targetPixelX = scaledX * screenWidth
         val targetPixelY = scaledY * screenHeight
 
@@ -201,64 +247,104 @@ class HandTracker(
         val smoothX = filterX.filter(targetPixelX, timestamp)
         val smoothY = filterY.filter(targetPixelY, timestamp)
 
-        // --- Deteksi pinch jarak ---
-        val swipeDist = hypot(
-            (indexTip.x() - thumbTip.x()).toDouble(),
-            (indexTip.y() - thumbTip.y()).toDouble()
-        ).toFloat()
+        // --- Pinch Distances ---
+        fun pinchDist(a: com.google.mediapipe.tasks.components.containers.NormalizedLandmark,
+                      b: com.google.mediapipe.tasks.components.containers.NormalizedLandmark): Float {
+            return hypot((a.x() - b.x()).toDouble(), (a.y() - b.y()).toDouble()).toFloat()
+        }
 
-        val clickDist = hypot(
-            (middleTip.x() - thumbTip.x()).toDouble(),
-            (middleTip.y() - thumbTip.y()).toDouble()
-        ).toFloat()
+        val swipeDist = pinchDist(indexTip, thumbTip)
+        val clickDist = pinchDist(middleTip, thumbTip)
+        val backDist = pinchDist(ringTip, thumbTip)
+        val pinkyDist = pinchDist(pinkyTip, thumbTip)
 
-        val backDist = hypot(
-            (ringTip.x() - thumbTip.x()).toDouble(),
-            (ringTip.y() - thumbTip.y()).toDouble()
-        ).toFloat()
+        val pinchThreshold = 0.06f
 
-        val isSwipePinch = swipeDist < 0.06f
-        val isClickPinch = clickDist < 0.06f && !isSwipePinch
-        val isBackPinch = backDist < 0.06f && !isSwipePinch && !isClickPinch
+        // Priority: swipe > click/longpress > back > home/recents
+        val isSwipePinch = swipeDist < pinchThreshold
+        val isClickPinch = clickDist < pinchThreshold && !isSwipePinch
+        val isBackPinch = backDist < pinchThreshold && !isSwipePinch && !isClickPinch
+        val isPinkyPinch = pinkyDist < pinchThreshold && !isSwipePinch && !isClickPinch && !isBackPinch
 
-        // --- Tentukan gesture ---
+        // --- Determine Gesture ---
         var gesture = GestureType.NONE
 
-        // SWIPE: Telunjuk + Jempol pinch & drag
+        // ===== SWIPE =====
         if (isSwipePinch) {
             gesture = if (!isSwipePrev) GestureType.SWIPE_START else GestureType.SWIPING
         } else if (isSwipePrev) {
             gesture = GestureType.SWIPE_END
         }
 
-        // CLICK: Jari Tengah + Jempol (hanya trigger sekali saat mulai pinch)
-        if (isClickPinch && !isClickPrev && gesture == GestureType.NONE) {
-            gesture = GestureType.CLICK
+        // ===== CLICK / LONG PRESS (Jari Tengah + Jempol) =====
+        if (gesture == GestureType.NONE) {
+            if (isClickPinch) {
+                if (!isClickPinchPrev) {
+                    // Baru mulai pinch
+                    clickPinchStartTime = now
+                    longPressTriggered = false
+                } else if (!longPressTriggered && (now - clickPinchStartTime) >= LONG_PRESS_THRESHOLD) {
+                    // Sudah ditahan cukup lama → long press
+                    gesture = GestureType.LONG_PRESS_START
+                    longPressTriggered = true
+                }
+                // Jangan kirim gesture saat masih dalam "waiting" period
+            } else if (isClickPinchPrev) {
+                // Baru dilepas
+                if (longPressTriggered) {
+                    gesture = GestureType.LONG_PRESS_END
+                    longPressTriggered = false
+                } else {
+                    // Dilepas sebelum threshold → tap/click
+                    gesture = GestureType.CLICK
+                }
+            }
         }
 
-        // BACK: Jari Manis + Jempol (hanya trigger sekali)
-        if (isBackPinch && !isBackPrev && gesture == GestureType.NONE) {
-            gesture = GestureType.BACK
+        // ===== BACK (Jari Manis + Jempol) =====
+        if (gesture == GestureType.NONE) {
+            if (isBackPinch && !isBackPrev) {
+                gesture = GestureType.BACK
+            }
         }
 
-        // Click stabilization: freeze cursor saat click
-        if (isClickPinch && !isFrozen) {
+        // ===== HOME / RECENT APPS (Kelingking + Jempol) =====
+        if (gesture == GestureType.NONE) {
+            if (isPinkyPinch) {
+                if (!isPinkyPinchPrev) {
+                    pinkyPinchStartTime = now
+                    recentAppsTriggered = false
+                } else if (!recentAppsTriggered && (now - pinkyPinchStartTime) >= RECENT_APPS_THRESHOLD) {
+                    gesture = GestureType.RECENT_APPS
+                    recentAppsTriggered = true
+                }
+            } else if (isPinkyPinchPrev) {
+                if (!recentAppsTriggered) {
+                    gesture = GestureType.HOME
+                }
+                recentAppsTriggered = false
+            }
+        }
+
+        // --- Stabilization ---
+        val shouldFreeze = isClickPinch || isPinkyPinch
+        if (shouldFreeze && !isFrozen) {
             isFrozen = true
             frozenX = smoothX
             frozenY = smoothY
-        } else if (!isClickPinch) {
+        } else if (!shouldFreeze) {
             isFrozen = false
         }
 
-        // Saat swipe, cursor TIDAK di-freeze agar bisa track gerakan
         val finalX = if (isFrozen) frozenX else smoothX
         val finalY = if (isFrozen) frozenY else smoothY
 
         lastX = finalX
         lastY = finalY
         isSwipePrev = isSwipePinch
-        isClickPrev = isClickPinch
+        isClickPinchPrev = isClickPinch
         isBackPrev = isBackPinch
+        isPinkyPinchPrev = isPinkyPinch
 
         CoroutineScope(Dispatchers.Main).launch {
             onHandUpdate(finalX, finalY, gesture, result)
