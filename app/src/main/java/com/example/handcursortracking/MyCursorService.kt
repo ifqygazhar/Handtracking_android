@@ -2,13 +2,17 @@ package com.example.handcursortracking
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -16,7 +20,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.TextView
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -39,17 +42,23 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
     private var overlayView: HandOverlayView? = null
     private var gestureLabel: TextView? = null
     private var handTracker: HandTracker? = null
+    private var isCameraPipVisible = false
 
     // Swipe tracking
     private var swipeStartX = 0f
     private var swipeStartY = 0f
 
-    // Long press gesture tracking
-    private var longPressGesture: GestureDescription? = null
-
     // Gesture label auto-hide
     private val hideLabelRunnable = Runnable {
         gestureLabel?.visibility = View.GONE
+    }
+
+    // BroadcastReceiver for PIP toggle from MainActivity
+    private val pipToggleReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val showPip = intent?.getBooleanExtra("show_pip", false) ?: false
+            toggleCameraPip(showPip)
+        }
     }
 
     override fun onCreate() {
@@ -64,9 +73,21 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
+        // Read PIP preference (hidden by default)
+        val prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE)
+        isCameraPipVisible = prefs.getBoolean(MainActivity.KEY_SHOW_CAMERA_PIP, false)
+
         setupCameraDebugWindow()
         setupCursorWindow()
         setupGestureLabel()
+
+        // Register broadcast receiver for PIP toggle
+        val filter = IntentFilter("com.example.handcursortracking.TOGGLE_PIP")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipToggleReceiver, filter, RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(pipToggleReceiver, filter)
+        }
 
         val previewView = cameraContainer?.getChildAt(0) as? PreviewView
 
@@ -86,6 +107,11 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
 
         handTracker?.start(previewView?.surfaceProvider)
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+    }
+
+    private fun toggleCameraPip(show: Boolean) {
+        isCameraPipVisible = show
+        cameraContainer?.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     private fun handleGesture(gesture: GestureType, x: Float, y: Float) {
@@ -201,6 +227,9 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         params.y = 20
 
         windowManager.addView(cameraContainer, params)
+
+        // Apply initial visibility from preferences
+        cameraContainer?.visibility = if (isCameraPipVisible) View.VISIBLE else View.GONE
     }
 
     private fun setupCursorWindow() {
@@ -364,6 +393,9 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         handTracker?.stop()
         handler.removeCallbacksAndMessages(null)
+        try {
+            unregisterReceiver(pipToggleReceiver)
+        } catch (_: Exception) {}
         try {
             if (cursorView != null) windowManager.removeView(cursorView)
             if (cameraContainer != null) windowManager.removeView(cameraContainer)

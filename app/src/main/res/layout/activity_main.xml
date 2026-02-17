@@ -93,9 +93,73 @@
             android:textSize="13sp"
             android:backgroundTint="#2C2C2C"
             android:textColor="#FF9800"
-            android:layout_marginBottom="24dp"
+            android:layout_marginBottom="8dp"
             android:visibility="gone"
             style="@style/Widget.Material3.Button" />
+
+        <!-- Camera Permission -->
+        <Button
+            android:id="@+id/btnCameraPermission"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="📷  Grant Camera Permission"
+            android:textSize="13sp"
+            android:backgroundTint="#2C2C2C"
+            android:textColor="#FF9800"
+            android:layout_marginBottom="8dp"
+            android:visibility="gone"
+            style="@style/Widget.Material3.Button" />
+
+        <!-- Settings Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="SETTINGS"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.15"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Camera Debug PIP Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginBottom="24dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Camera Debug Preview"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Show camera preview with hand overlay"
+                    android:textColor="#9E9E9E"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/switchCameraPip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
 
         <!-- Section: Gesture Guide -->
         <TextView

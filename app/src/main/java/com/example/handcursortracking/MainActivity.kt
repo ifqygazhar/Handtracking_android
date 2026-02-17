@@ -1,6 +1,9 @@
 package com.example.handcursortracking
 
+import android.Manifest
 import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -8,6 +11,9 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.google.android.material.materialswitch.MaterialSwitch
 
 class MainActivity : AppCompatActivity() {
 
@@ -15,6 +21,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var btnToggleService: Button
     private lateinit var btnOverlayPermission: Button
+    private lateinit var btnCameraPermission: Button
+    private lateinit var switchCameraPip: MaterialSwitch
+    private lateinit var prefs: SharedPreferences
 
     data class GestureInfo(
         val emoji: String,
@@ -43,17 +52,28 @@ class MainActivity : AppCompatActivity() {
         R.id.gestureRecents
     )
 
+    companion object {
+        private const val CAMERA_PERMISSION_REQUEST_CODE = 1001
+        const val PREFS_NAME = "hand_cursor_prefs"
+        const val KEY_SHOW_CAMERA_PIP = "show_camera_pip"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         statusDot = findViewById(R.id.statusDot)
         statusText = findViewById(R.id.statusText)
         btnToggleService = findViewById(R.id.btnToggleService)
         btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
+        btnCameraPermission = findViewById(R.id.btnCameraPermission)
+        switchCameraPip = findViewById(R.id.switchCameraPip)
 
         setupGestureCards()
         setupButtons()
+        setupCameraPipToggle()
     }
 
     override fun onResume() {
@@ -85,27 +105,69 @@ class MainActivity : AppCompatActivity() {
             )
             startActivity(intent)
         }
+
+        btnCameraPermission.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.CAMERA),
+                    CAMERA_PERMISSION_REQUEST_CODE
+                )
+            }
+        }
+    }
+
+    private fun setupCameraPipToggle() {
+        val isEnabled = prefs.getBoolean(KEY_SHOW_CAMERA_PIP, false)
+        switchCameraPip.isChecked = isEnabled
+
+        switchCameraPip.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_SHOW_CAMERA_PIP, isChecked).apply()
+
+            // Notify the service to toggle PIP visibility
+            val intent = Intent("com.example.handcursortracking.TOGGLE_PIP")
+            intent.putExtra("show_pip", isChecked)
+            sendBroadcast(intent)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
+            updateStatus()
+        }
     }
 
     private fun updateStatus() {
         val serviceEnabled = isAccessibilityServiceEnabled()
         val overlayEnabled = Settings.canDrawOverlays(this)
+        val cameraEnabled = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
-        if (serviceEnabled && overlayEnabled) {
+        // Camera permission button
+        btnCameraPermission.visibility = if (cameraEnabled) View.GONE else View.VISIBLE
+
+        // Overlay permission button
+        btnOverlayPermission.visibility = if (overlayEnabled) View.GONE else View.VISIBLE
+
+        // Status
+        if (serviceEnabled && overlayEnabled && cameraEnabled) {
             statusDot.setBackgroundResource(R.drawable.status_dot_green)
             statusText.text = "Hand tracking is active"
             btnToggleService.text = "Settings"
-            btnOverlayPermission.visibility = View.GONE
-        } else if (!overlayEnabled) {
-            statusDot.setBackgroundResource(R.drawable.status_dot_red)
-            statusText.text = "Overlay permission required"
-            btnToggleService.text = "Enable"
-            btnOverlayPermission.visibility = View.VISIBLE
         } else {
             statusDot.setBackgroundResource(R.drawable.status_dot_red)
-            statusText.text = "Accessibility service not enabled"
+            val missing = mutableListOf<String>()
+            if (!cameraEnabled) missing.add("Camera")
+            if (!overlayEnabled) missing.add("Overlay")
+            if (!serviceEnabled) missing.add("Accessibility")
+            statusText.text = "Missing: ${missing.joinToString(", ")}"
             btnToggleService.text = "Enable"
-            btnOverlayPermission.visibility = View.GONE
         }
     }
 
