@@ -159,13 +159,9 @@ class MainActivity : AppCompatActivity() {
         val cameraEnabled = ContextCompat.checkSelfPermission(
             this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
-        // Camera permission button
         btnCameraPermission.visibility = if (cameraEnabled) View.GONE else View.VISIBLE
-
-        // Overlay permission button
         btnOverlayPermission.visibility = if (overlayEnabled) View.GONE else View.VISIBLE
 
-        // Status
         if (serviceEnabled && overlayEnabled && cameraEnabled) {
             statusDot.setBackgroundResource(R.drawable.status_dot_green)
             statusText.text = "Hand tracking is active"

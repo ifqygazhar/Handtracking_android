@@ -27,17 +27,17 @@ import kotlin.math.hypot
 
 enum class GestureType {
     NONE,
-    CLICK,              // Jari tengah + jempol (singkat)
-    LONG_PRESS_START,   // Jari tengah + jempol (tahan > threshold)
-    LONG_PRESS_END,     // Jari tengah + jempol dilepas setelah long press
-    BACK,               // Jari manis + jempol
-    HOME,               // Kelingking + jempol (singkat)
-    RECENT_APPS,        // Kelingking + jempol (tahan > threshold)
-    NOTIFICATIONS,      // Kelingking + jempol (tahan lebih lama)
-    SWIPE_START,        // Telunjuk + jempol mulai pinch
-    SWIPING,            // Telunjuk + jempol masih ditahan
-    SWIPE_END,          // Telunjuk + jempol dilepas
-    HAND_LOST           // Tangan tidak terdeteksi
+    CLICK,              // Middle + thumb (short)
+    LONG_PRESS_START,   // Middle + thumb (hold > threshold)
+    LONG_PRESS_END,     // Middle + thumb released after long press
+    BACK,               // Ring + thumb
+    HOME,               // Pinky + thumb (short)
+    RECENT_APPS,        // Pinky + thumb (hold > threshold)
+    NOTIFICATIONS,      // Pinky + thumb (hold longer)
+    SWIPE_START,        // Index + thumb start pinch
+    SWIPING,            // Index + thumb still held
+    SWIPE_END,          // Index + thumb released
+    HAND_LOST           // Hand not detected
 }
 
 class HandTracker(
@@ -74,15 +74,15 @@ class HandTracker(
     // Swipe state
     private var isSwipePrev = false
 
-    // Click / Long Press state (jari tengah + jempol)
+    // Click / Long Press state (middle + thumb)
     private var isClickPinchPrev = false
     private var clickPinchStartTime = 0L
     private var longPressTriggered = false
 
-    // Back state (jari manis + jempol)
+    // Back state (ring + thumb)
     private var isBackPrev = false
 
-    // Home / Recent Apps state (kelingking + jempol)
+    // Home / Recent Apps state (pinky + thumb)
     private var isPinkyPinchPrev = false
     private var pinkyPinchStartTime = 0L
     private var recentAppsTriggered = false
@@ -190,7 +190,7 @@ class HandTracker(
             handLostFrames++
 
             CoroutineScope(Dispatchers.Main).launch {
-                // Kalau sedang swipe lalu tangan hilang
+                // If swiping and hand is lost
                 if (isSwipePrev) {
                     isSwipePrev = false
                     onHandUpdate(lastX, lastY, GestureType.SWIPE_END, null)
@@ -199,7 +199,7 @@ class HandTracker(
 
                 // Reset pinch states
                 if (isClickPinchPrev && !longPressTriggered) {
-                    // Tangan hilang saat pinch singkat → click
+                    // Hand lost during short pinch → click
                     isClickPinchPrev = false
                     onHandUpdate(lastX, lastY, GestureType.CLICK, null)
                     return@launch
@@ -229,11 +229,11 @@ class HandTracker(
         val now = SystemClock.uptimeMillis()
 
         val landmarks = result.landmarks()[0]
-        val indexTip = landmarks[8]     // Telunjuk
-        val thumbTip = landmarks[4]     // Jempol
-        val middleTip = landmarks[12]   // Jari tengah
-        val ringTip = landmarks[16]     // Jari manis
-        val pinkyTip = landmarks[20]    // Kelingking
+        val indexTip = landmarks[8]     // Index finger
+        val thumbTip = landmarks[4]     // Thumb
+        val middleTip = landmarks[12]   // Middle finger
+        val ringTip = landmarks[16]     // Ring finger
+        val pinkyTip = landmarks[20]    // Pinky
 
         // --- Cursor Position ---
         val mirroredX = 1f - indexTip.x()
@@ -276,39 +276,39 @@ class HandTracker(
             gesture = GestureType.SWIPE_END
         }
 
-        // ===== CLICK / LONG PRESS (Jari Tengah + Jempol) =====
+        // ===== CLICK / LONG PRESS (Middle + Thumb) =====
         if (gesture == GestureType.NONE) {
             if (isClickPinch) {
                 if (!isClickPinchPrev) {
-                    // Baru mulai pinch
+                    // Just started pinch
                     clickPinchStartTime = now
                     longPressTriggered = false
                 } else if (!longPressTriggered && (now - clickPinchStartTime) >= LONG_PRESS_THRESHOLD) {
-                    // Sudah ditahan cukup lama → long press
+                    // Held long enough → long press
                     gesture = GestureType.LONG_PRESS_START
                     longPressTriggered = true
                 }
-                // Jangan kirim gesture saat masih dalam "waiting" period
+                // Don't send gesture while in "waiting" period
             } else if (isClickPinchPrev) {
-                // Baru dilepas
+                // Just released
                 if (longPressTriggered) {
                     gesture = GestureType.LONG_PRESS_END
                     longPressTriggered = false
                 } else {
-                    // Dilepas sebelum threshold → tap/click
+                    // Released before threshold → tap/click
                     gesture = GestureType.CLICK
                 }
             }
         }
 
-        // ===== BACK (Jari Manis + Jempol) =====
+        // ===== BACK (Ring + Thumb) =====
         if (gesture == GestureType.NONE) {
             if (isBackPinch && !isBackPrev) {
                 gesture = GestureType.BACK
             }
         }
 
-        // ===== HOME / RECENT APPS (Kelingking + Jempol) =====
+        // ===== HOME / RECENT APPS (Pinky + Thumb) =====
         if (gesture == GestureType.NONE) {
             if (isPinkyPinch) {
                 if (!isPinkyPinchPrev) {
@@ -367,11 +367,11 @@ class HandTracker(
         private var dxPrev: Float = 0.0f
         private var tPrev: Double? = null
 
-        fun reset() {
-            xPrev = null
-            dxPrev = 0.0f
-            tPrev = null
-        }
+//        fun reset() {
+//            xPrev = null
+//            dxPrev = 0.0f
+//            tPrev = null
+//        }
 
         fun filter(x: Float, t: Double): Float {
             if (tPrev == null || xPrev == null) {

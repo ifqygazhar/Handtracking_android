@@ -182,7 +182,7 @@ class MyCursorService : AccessibilityService(), LifecycleOwner {
             }
 
             GestureType.SWIPING -> {
-                // Cursor tetap kuning selama swipe
+                // Cursor remains yellow while swiping
             }
 
             GestureType.SWIPE_END -> {
